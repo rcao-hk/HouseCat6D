@@ -1,0 +1,6 @@
+*.o
+*.txt
+*.so
+PKG-INFO
+log
+__pycache__

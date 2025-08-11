@@ -11,6 +11,7 @@ from tensorboardX import SummaryWriter
 
 class Solver(gorilla.solver.BaseSolver):
     def __init__(self, model, loss, dataloaders, logger, cfg):
+        cfg.mode = 'iter'
         super(Solver, self).__init__(
             model=model,
             dataloaders=dataloaders,

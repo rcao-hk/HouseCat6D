@@ -1,0 +1,1 @@
+python test_housecat.py --gpus 0 --test_epoch 30 --result_dir results_gt --depth_type 'gt' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/housecat6d/hammer_dav2_complete_obs_iter_unc_cali_convgru_l1_only_0.2_l1+grad_sigma_conf_672x518/vitb' --dataset housecat --config config/housecat.yaml

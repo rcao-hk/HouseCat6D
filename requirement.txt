@@ -1,5 +1,4 @@
 argparse
-pickle
 opencv-python
 numpy
 pyrender

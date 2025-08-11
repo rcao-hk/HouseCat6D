@@ -44,6 +44,18 @@ def get_parser():
                         type=str,
                         default="results",
                         help="")
+    parser.add_argument("--depth_type", 
+                        type=str,
+                        default="raw",
+                        help="[raw | restored | restored_conf]")
+    parser.add_argument("--restored_depth_root",
+                        type=str,
+                        default="",
+                        help="the root path of restored depth maps, only used when depth_type is restored")
+    parser.add_argument("--conf_thres",
+                        type=float,
+                        default=0.1,
+                        help="confidence threshold for restored_conf depth type")
     args_cfg = parser.parse_args()
 
     return args_cfg
@@ -55,6 +67,9 @@ def init():
     cfg.dataset = args.dataset
     cfg.gpus = args.gpus
     cfg.test_epoch = args.test_epoch
+    cfg.depth_type = args.depth_type
+    cfg.restored_depth_root = args.restored_depth_root
+    cfg.conf_thres = args.conf_thres
     # cfg.log_dir = os.path.join('log', args.dataset)
     cfg.log_dir = cfg.test.log_dir
     cfg.save_path = os.path.join(cfg.log_dir, args.result_dir)
@@ -101,7 +116,7 @@ if __name__ == "__main__":
     gorilla.solver.load_checkpoint(model=r_model, filename=checkpoint)
 
     # data loader
-    dataset = HouseCat6DTestDataset(cfg.test, cfg.dataset, cfg.resolution)
+    dataset = HouseCat6DTestDataset(cfg.test, cfg.dataset, cfg.resolution, cfg.depth_type, cfg.restored_depth_root, cfg.conf_thres)
     dataloder = torch.utils.data.DataLoader(
             dataset,
             batch_size=1,

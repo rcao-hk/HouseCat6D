@@ -32,6 +32,8 @@ class HouseCat6DTrainingDataset(Dataset):
             ds_rate=2,
             seq_length=-1, # -1 means full
             img_length=-1, # -1 means full
+            depth_type='raw',
+            restored_depth_root=''
     ):
         self.config = config
         self.dataset = dataset
@@ -40,6 +42,8 @@ class HouseCat6DTrainingDataset(Dataset):
         self.ds_rate = ds_rate
         self.sample_num = self.config.sample_num
         self.data_dir = config.data_dir
+        self.depth_type = depth_type
+        self.restored_depth_root = restored_depth_root
         self.train_scenes_rgb = glob.glob(os.path.join(self.data_dir,'scene*','rgb'))
         self.train_scenes_rgb.sort()
         self.train_scenes_rgb = self.train_scenes_rgb[:seq_length] if seq_length != -1 else self.train_scenes_rgb[:]
@@ -84,17 +88,31 @@ class HouseCat6DTrainingDataset(Dataset):
         return data_dict
         
     def _read_data(self, image_index):
-        img_type = 'real'
         img_path = os.path.join(self.data_dir, self.real_img_list[image_index])
         pol_path = img_path.replace('rgb','pol')
         real_intrinsics = np.loadtxt(os.path.join(img_path.split('rgb')[0], 'intrinsics.txt')).reshape(3,3)
         cam_fx, cam_fy, cam_cx, cam_cy = real_intrinsics[0,0], real_intrinsics[1,1], real_intrinsics[0,2], real_intrinsics[1,2]
 
-
-        depth_ = load_housecat_depth(img_path)
-        depth_ = fill_missing(depth_, self.norm_scale, 1)
-
-
+        if self.depth_type == 'raw':
+            depth_ = load_housecat_depth(img_path)
+            depth_ = fill_missing(depth_, self.norm_scale, 1)
+        elif self.depth_type == 'restored':
+            scene_name = img_path.split('/')[-3]
+            anno_idx = img_path.split('/')[-1].split('.')[0]
+            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+            depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+            if depth_ is None:
+                print(f"Warning: Restored depth not found for {restored_depth_path}. Using raw depth instead.")
+                depth_ = load_housecat_depth(img_path)
+                depth_ = fill_missing(depth_, self.norm_scale, 1)
+        elif self.depth_type == 'gt':
+            gt_depth_path = img_path.replace('rgb', 'depth_gt')
+            depth_ = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
+            if depth_ is None:
+                print(f"Warning: GT depth not found for {gt_depth_path}. Using raw depth instead.")
+                depth_ = load_housecat_depth(img_path)
+                depth_ = fill_missing(depth_, self.norm_scale, 1)
+                
         # mask
         with open(img_path.replace('rgb','labels').replace('.png','_label.pkl'), 'rb') as f:
             gts = cPickle.load(f)

@@ -1,7 +1,7 @@
 import os
 import math
 import cv2
-# import open3d as o3d
+import open3d as o3d
 import glob
 import numpy as np
 import _pickle as cPickle
@@ -82,10 +82,8 @@ class HouseCat6DTrainingDataset(Dataset):
         real_intrinsics = np.loadtxt(os.path.join(img_path.split('rgb')[0], 'intrinsics.txt')).reshape(3,3)
         cam_fx, cam_fy, cam_cx, cam_cy = real_intrinsics[0,0], real_intrinsics[1,1], real_intrinsics[0,2], real_intrinsics[1,2]
 
-
         depth = load_housecat_depth(img_path)
         depth = fill_missing(depth, self.norm_scale, 1)
-
 
         # mask
         with open(img_path.replace('rgb','labels').replace('.png','_label.pkl'), 'rb') as f:
@@ -267,13 +265,58 @@ class HouseCat6DTrainingDataset(Dataset):
         return ret_dict
     
 
+def random_sampling(points_len, sample_num):
+    if points_len >= sample_num:
+        idxs = np.random.choice(points_len, sample_num, replace=False)
+    else:
+        idxs1 = np.arange(points_len)
+        idxs2 = np.random.choice(points_len, sample_num - points_len, replace=True)
+        idxs = np.concatenate([idxs1, idxs2], axis=0)
+    return idxs
+
+
+def uncertainty_guided_sampling_multimodal(uncertainty_map, sample_num, low_conf_threshold=0.5):
+    """
+    使用torch.multinomial进行不确定性引导的采样。
+    
+    参数:
+    uncertainty_map (np.ndarray): 图像尺寸的不确定性图，形状为 (H, W)。
+    sample_num (int): 需要采样的深度点的数量。
+
+    返回:
+    sampled_indices (torch.Tensor): 采样的像素索引。
+    """
+    
+    # 将不确定性图转换为Tensor并归一化
+    uncertainty_map = torch.tensor(uncertainty_map, dtype=torch.float32)
+    
+    # 归一化不确定性图（值在0和1之间）
+    uncertainty_map = uncertainty_map - uncertainty_map.min() / (uncertainty_map.max() - uncertainty_map.min())
+    
+    # 通过不确定性图生成概率分布
+    prob_distribution = 1 - uncertainty_map.flatten()
+    prob_distribution[prob_distribution < low_conf_threshold] = 0.0  # 设置低置信度阈值
+    
+    # 采样的数量为sample_num，从概率分布中进行无放回采样
+    if len(prob_distribution) < sample_num:
+        print("Sample number exceeds the number of available pixels.")
+        sampled_indices = torch.multinomial(prob_distribution, sample_num, replacement=True)
+    else:
+        sampled_indices = torch.multinomial(prob_distribution, sample_num, replacement=False)
+
+    return sampled_indices
+
 
 class HouseCat6DTestDataset():
-    def __init__(self, config, dataset='housecat', resolution=64):
+    def __init__(self, config, dataset='housecat', resolution=64, depth_type='raw', restored_depth_root=None, conf_thres=0.1):
+
         self.dataset = dataset
         self.resolution = resolution
         self.data_dir = config.data_dir
         self.sample_num = config.sample_num
+        self.depth_type = depth_type
+        self.restored_depth_root = restored_depth_root
+        self.conf_thres = conf_thres
         self.test_scenes_rgb = glob.glob(os.path.join(self.data_dir, 'test_scene*', 'rgb'))
         self.test_intrinsics_list = [os.path.join(scene, '..', 'intrinsics.txt') for scene in self.test_scenes_rgb]
         self.test_img_list = [img_path for scene in self.test_scenes_rgb for img_path in
@@ -323,9 +366,27 @@ class HouseCat6DTestDataset():
         # pts
         intrinsics = np.loadtxt(os.path.join(img_path.split('rgb')[0], 'intrinsics.txt')).reshape(3, 3)
         cam_fx, cam_fy, cam_cx, cam_cy = intrinsics[0, 0], intrinsics[1, 1], intrinsics[0, 2], intrinsics[1, 2]
-        depth = load_housecat_depth(img_path) #480*640 # TODO 1096x852
-        depth = fill_missing(depth, self.norm_scale, 1)
-
+        
+        if self.depth_type == 'raw':
+            depth = load_housecat_depth(img_path) #480*640 # TODO 1096x852
+            depth = fill_missing(depth, self.norm_scale, 1)
+        elif self.depth_type == 'restored':
+            scene_name = img_path.split('/')[-3]
+            anno_idx = img_path.split('/')[-1].split('.')[0]
+            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+            depth = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+        elif self.depth_type == 'restored_conf':
+            scene_name = img_path.split('/')[-3]
+            anno_idx = img_path.split('/')[-1].split('.')[0]
+            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+            depth = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+            depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
+            depth_conf = np.load(depth_conf_path)
+            
+        elif self.depth_type == 'gt':
+            gt_depth_path = img_path.replace('rgb', 'depth_gt')
+            depth = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
+            
         xmap = self.xmap
         ymap = self.ymap
         pts2 = depth.copy() / self.norm_scale
@@ -333,6 +394,11 @@ class HouseCat6DTestDataset():
         pts1 = (ymap - cam_cy) * pts2 / cam_fy
         pts = np.transpose(np.stack([pts0, pts1, pts2]), (1,2,0)).astype(np.float32) # 480*640*3
 
+        # pcd = o3d.open3d.geometry.PointCloud()
+        # pcd.points = o3d.open3d.utility.Vector3dVector(pts.reshape((-1, 3)))
+        # pcd.colors = o3d.open3d.utility.Vector3dVector(rgb.reshape((-1, 3)) / 255.0)
+        # o3d.io.write_point_cloud('pcd_{}_{}.ply'.format(index, self.depth_type), pcd)
+        
         all_rgb = []
         all_rgb_pol = []
         all_pts = []
@@ -380,10 +446,17 @@ class HouseCat6DTestDataset():
                 center = np.mean(instance_pts, axis=0)
                 instance_pts = instance_pts - center[np.newaxis, :]
 
-                if instance_pts.shape[0] <= self.sample_num:
-                    choose_idx = np.random.choice(np.arange(instance_pts.shape[0]), self.sample_num)
+                points_len = instance_pts.shape[0]
+                if self.depth_type == 'restored_conf':
+                    instance_depth_conf = depth_conf[rmin:rmax, cmin:cmax].reshape((-1, 1))[choose, :].copy()
+                    choose_idx = uncertainty_guided_sampling_multimodal(instance_depth_conf, self.sample_num, self.conf_thres)
                 else:
-                    choose_idx = np.random.choice(np.arange(instance_pts.shape[0]), self.sample_num, replace=False)
+                    choose_idx = random_sampling(points_len, self.sample_num)
+                # if instance_pts.shape[0] <= self.sample_num:
+                #     choose_idx = np.random.choice(np.arange(instance_pts.shape[0]), self.sample_num)
+                # else:
+                #     choose_idx = np.random.choice(np.arange(instance_pts.shape[0]), self.sample_num, replace=False)
+                
                 instance_pts = instance_pts[choose_idx, :]
                 instance_rgb = instance_rgb[choose_idx, :]
                 instance_pol_info = instance_pol_info.reshape(-1,2)[choose_idx, :]
