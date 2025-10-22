@@ -4,3 +4,4 @@
 PKG-INFO
 log
 __pycache__
+*.png

@@ -40,13 +40,10 @@ def get_parser():
                         type=int,
                         default=0,
                         help="test epoch")
-    # parser.add_argument("--result_dir",
-    #                     type=str,
-    #                     default="results",
-    #                     help="")
-    parser.add_argument("--method_suffix",
+    parser.add_argument("--result_dir",
                         type=str,
-                        default="ours",)
+                        default="results",
+                        help="")
     parser.add_argument("--depth_type", 
                         type=str,
                         default="raw",
@@ -75,12 +72,12 @@ def init():
     cfg.conf_thres = args.conf_thres
     # cfg.log_dir = os.path.join('log', args.dataset)
     cfg.log_dir = cfg.test.log_dir
-    cfg.save_path = os.path.join(cfg.log_dir, 'results_'+args.method_suffix)
+    cfg.save_path = os.path.join(cfg.log_dir, args.result_dir)
     if not os.path.isdir(cfg.save_path):
         os.makedirs(cfg.save_path)
 
     logger = get_logger(
-        level_print=logging.INFO, level_save=logging.WARNING, path_file=cfg.log_dir+"/test_{}_{}_logger.log".format(cfg.test_epoch, args.method_suffix))
+        level_print=logging.INFO, level_save=logging.WARNING, path_file=cfg.log_dir+"/test_{}_logger.log".format(cfg.test_epoch))
     gorilla.utils.set_cuda_visible_devices(gpu_ids=cfg.gpus)
     return logger, cfg
 
@@ -98,34 +95,4 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(cfg.rd_seed)
     torch.cuda.manual_seed_all(cfg.rd_seed)
 
-    # model
-    logger.info("=> loading model ...")
-    from model.PN2 import Net
-    ts_model = Net(cfg.n_cls)
-    from model.VI_Net import Net
-    r_model = Net(cfg.resolution, cfg.ds_rate)
-    if len(cfg.gpus)>1:
-        ts_model = torch.nn.DataParallel(ts_model, range(len(cfg.gpus.split(","))))
-        r_model = torch.nn.DataParallel(r_model, range(len(cfg.gpus.split(","))))
-    ts_model = ts_model.cuda()
-    r_model = r_model.cuda()
-
-    checkpoint = os.path.join(cfg.log_dir, 'PN2', 'epoch_' + str(cfg.test_epoch) + '.pth')
-    logger.info("=> loading PN2 checkpoint from path: {} ...".format(checkpoint))
-    gorilla.solver.load_checkpoint(model=ts_model, filename=checkpoint)
-
-    checkpoint = os.path.join(cfg.log_dir, 'VI_Net', 'epoch_' + str(cfg.test_epoch) + '.pth')
-    logger.info("=> loading VI-Net checkpoint from path: {} ...".format(checkpoint))
-    gorilla.solver.load_checkpoint(model=r_model, filename=checkpoint)
-
-    # data loader
-    dataset = HouseCat6DTestDataset(cfg.test, cfg.dataset, cfg.resolution, cfg.depth_type, cfg.restored_depth_root, cfg.conf_thres)
-    dataloder = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=8,
-            shuffle=False,
-            drop_last=False
-        )
-    test_func(ts_model, r_model, dataloder, cfg.save_path)
     evaluate_housecat(cfg.save_path, logger)

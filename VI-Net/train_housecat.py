@@ -46,11 +46,15 @@ def get_parser():
     parser.add_argument("--depth_type", 
                         type=str,
                         default="raw",
-                        help="[raw | restored | gt]")
+                        help="[raw | restored | gt | restored_conf]")
     parser.add_argument("--restored_depth_root",
                         type=str,
                         default="",
                         help="the root path of restored depth maps, only used when depth_type is restored")
+    parser.add_argument("--conf_thres",
+                        type=float,
+                        default=0.1,
+                        help="confidence threshold for restored_conf depth type")
     args_cfg = parser.parse_args()
 
     return args_cfg
@@ -65,6 +69,7 @@ def init():
     cfg.checkpoint_epoch = args.checkpoint_epoch
     cfg.depth_type = args.depth_type
     cfg.restored_depth_root = args.restored_depth_root
+    cfg.conf_thres = args.conf_thres
     log_dir_dataset = cfg.log
     os.makedirs(log_dir_dataset, exist_ok=True)
     if cfg.mode == 'ts':
@@ -124,7 +129,8 @@ if __name__ == "__main__":
         seq_length=cfg.seq_length,  # -1 means full
         img_length=cfg.img_length,
         depth_type=cfg.depth_type,
-        restored_depth_root=cfg.restored_depth_root)
+        restored_depth_root=cfg.restored_depth_root,
+        conf_thres=cfg.conf_thres)
     
     dataloader = torch.utils.data.DataLoader(
         dataset,

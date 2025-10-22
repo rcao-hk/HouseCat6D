@@ -1,1 +1,0 @@
-python test_housecat.py --gpus 0 --test_epoch 40 --result_dir results_restored_conf_0.3 --dataset housecat --config config/housecat.yaml --depth_type 'restored_conf' --conf_thres 0.3 --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/housecat6d/hammer_dav2_complete_obs_iter_unc_cali_convgru_l1_only_0.2_l1+grad_sigma_conf_672x518/vitb'

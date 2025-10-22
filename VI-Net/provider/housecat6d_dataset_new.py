@@ -23,6 +23,45 @@ from utils.data_utils import (
     random_scale,
 )
 
+def random_sampling(points_len, sample_num):
+    if points_len <= sample_num:
+        idxs = np.random.choice(points_len, sample_num)
+    else:
+        idxs = np.random.choice(points_len, sample_num, replace=False)
+    return idxs
+
+
+def uncertainty_guided_sampling_multimodal(uncertainty_map, sample_num, low_conf_threshold=0.5):
+    """
+    使用torch.multinomial进行不确定性引导的采样。
+    
+    参数:
+    uncertainty_map (np.ndarray): 图像尺寸的不确定性图，形状为 (H, W)。
+    sample_num (int): 需要采样的深度点的数量。
+
+    返回:
+    sampled_indices (torch.Tensor): 采样的像素索引。
+    """
+    
+    # 将不确定性图转换为Tensor并归一化
+    uncertainty_map = torch.tensor(uncertainty_map, dtype=torch.float32)
+    
+    # 归一化不确定性图（值在0和1之间）
+    uncertainty_map = (uncertainty_map - uncertainty_map.min()) / (uncertainty_map.max() - uncertainty_map.min())
+    
+    # 通过不确定性图生成概率分布
+    prob_distribution = 1 - uncertainty_map.flatten()
+    prob_distribution[prob_distribution < low_conf_threshold] = 0.0  # 设置低置信度阈值
+    
+    # 采样的数量为sample_num，从概率分布中进行无放回采样
+    if len(prob_distribution) < sample_num:
+        print("Sample number exceeds the number of available pixels.")
+        sampled_indices = torch.multinomial(prob_distribution, sample_num, replacement=True)
+    else:
+        sampled_indices = torch.multinomial(prob_distribution, sample_num, replacement=False)
+
+    return sampled_indices
+
 class HouseCat6DTrainingDataset(Dataset):
     def __init__(self,
             config, 
@@ -33,7 +72,8 @@ class HouseCat6DTrainingDataset(Dataset):
             seq_length=-1, # -1 means full
             img_length=-1, # -1 means full
             depth_type='raw',
-            restored_depth_root=''
+            restored_depth_root='',
+            conf_thres=0.1,
     ):
         self.config = config
         self.dataset = dataset
@@ -44,6 +84,7 @@ class HouseCat6DTrainingDataset(Dataset):
         self.data_dir = config.data_dir
         self.depth_type = depth_type
         self.restored_depth_root = restored_depth_root
+        self.conf_thres = conf_thres
         self.train_scenes_rgb = glob.glob(os.path.join(self.data_dir,'scene*','rgb'))
         self.train_scenes_rgb.sort()
         self.train_scenes_rgb = self.train_scenes_rgb[:seq_length] if seq_length != -1 else self.train_scenes_rgb[:]
@@ -105,6 +146,13 @@ class HouseCat6DTrainingDataset(Dataset):
                 print(f"Warning: Restored depth not found for {restored_depth_path}. Using raw depth instead.")
                 depth_ = load_housecat_depth(img_path)
                 depth_ = fill_missing(depth_, self.norm_scale, 1)
+        elif self.depth_type == 'restored_conf':
+            scene_name = img_path.split('/')[-3]
+            anno_idx = img_path.split('/')[-1].split('.')[0]
+            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+            depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+            depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
+            depth_conf = np.load(depth_conf_path)
         elif self.depth_type == 'gt':
             gt_depth_path = img_path.replace('rgb', 'depth_gt')
             depth_ = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
@@ -150,10 +198,17 @@ class HouseCat6DTrainingDataset(Dataset):
             choose = mask[rmin:rmax, cmin:cmax].flatten().nonzero()[0]
             if len(choose)<=0:
                 return None
-            elif len(choose) <= self.sample_num:
-                choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num)
+            # elif len(choose) <= self.sample_num:
+            #     choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num)
+            # else:
+            #     choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num, replace=False)
+
+            if self.depth_type == 'restored_conf':
+                instance_depth_conf = depth_conf[rmin:rmax, cmin:cmax].reshape((-1, 1))[choose, :].copy()
+                choose_idx = uncertainty_guided_sampling_multimodal(instance_depth_conf, self.sample_num, self.conf_thres)
             else:
-                choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num, replace=False)
+                choose_idx = random_sampling(len(choose), self.sample_num)
+
             choose = choose[choose_idx]
 
             # pts

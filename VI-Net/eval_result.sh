@@ -1,0 +1,1 @@
+python eval_housecat.py --result_dir result_60 --dataset housecat --config config/housecat_restored_conf.yaml

@@ -291,7 +291,7 @@ def uncertainty_guided_sampling_multimodal(uncertainty_map, sample_num, low_conf
     uncertainty_map = torch.tensor(uncertainty_map, dtype=torch.float32)
     
     # 归一化不确定性图（值在0和1之间）
-    uncertainty_map = uncertainty_map - uncertainty_map.min() / (uncertainty_map.max() - uncertainty_map.min())
+    uncertainty_map = (uncertainty_map - uncertainty_map.min()) / (uncertainty_map.max() - uncertainty_map.min())
     
     # 通过不确定性图生成概率分布
     prob_distribution = 1 - uncertainty_map.flatten()
@@ -381,7 +381,7 @@ class HouseCat6DTestDataset():
             restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
             depth = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
             depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
-            depth_conf = np.load(depth_conf_path)
+            depth_conf = np.load(depth_conf_path).astype(np.float32)
             
         elif self.depth_type == 'gt':
             gt_depth_path = img_path.replace('rgb', 'depth_gt')
@@ -506,7 +506,8 @@ class HouseCat6DTestDataset():
 
 if __name__ == "__main__":
     import gorilla
-    cfg = gorilla.Config.fromfile('../config/housecat.yaml')
+    import open3d as o3d
+    cfg = gorilla.Config.fromfile('config/housecat.yaml')
     house = HouseCat6DTrainingDataset(cfg.train_dataset,
         'housecat',
         'r',
@@ -515,8 +516,23 @@ if __name__ == "__main__":
     print(len(house))
     a = house[0]
 
+    depth_type = 'restored_conf'
     house = HouseCat6DTestDataset(cfg.test,
                                       'housecat',
                                       resolution=cfg.resolution,
-                                      )
-    b = house[0]
+                                      depth_type=depth_type, restored_depth_root='/mnt/DATA/robotarm/rcao/result/depth/housecat6d/hammer_dav2_complete_obs_iter_unc_cali_convgru_l1_only_0.2_l1+grad_sigma_conf_672x518/vitb', conf_thres=0.5)
+    data = house[0]
+    rgb = data['rgb'][0].detach().cpu().numpy()
+    points = data['pts'][0].detach().cpu().numpy()
+    print(rgb.shape, points.shape)
+    
+    inst_pc = o3d.geometry.PointCloud()
+    inst_pc.points = o3d.utility.Vector3dVector(points)
+    if depth_type == 'raw':
+        inst_pc.paint_uniform_color([1, 0, 0])  # Red for raw depth
+    elif depth_type == 'restored':
+        inst_pc.paint_uniform_color([0, 1, 0])  # Green for restored depth
+    elif depth_type == 'restored_conf':
+        inst_pc.paint_uniform_color([0, 0, 1])
+    # inst_pc.colors = o3d.utility.Vector3dVector(rgb)
+    o3d.io.write_point_cloud('test_{}.ply'.format(depth_type), inst_pc)

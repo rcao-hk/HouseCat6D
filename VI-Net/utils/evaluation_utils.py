@@ -814,8 +814,11 @@ def compute_independent_mAP(final_results, synset_names, degree_thresholds=[360]
             iou_3d_aps[cls_id, s] = compute_ap_from_matches_scores(iou_pred_matches_all[cls_id][s, :],
                                                                    iou_pred_scores_all[cls_id][s, :],
                                                                    iou_gt_matches_all[cls_id][s, :])
-            logger.warning(f'{class_name} on {iou_thres}: {iou_3d_aps[cls_id, s] * 100}')
-
+            if logger is not None:
+                logger.warning(f'{class_name} on {iou_thres}: {iou_3d_aps[cls_id, s] * 100}')
+            else:
+                print(f'{class_name} on {iou_thres}: {iou_3d_aps[cls_id, s] * 100}')
+                
     iou_3d_aps[-1, :] = np.mean(iou_3d_aps[1:-1, :], axis=0)
 
     for i, degree_thres in enumerate(degree_thres_list):
@@ -879,18 +882,26 @@ def compute_independent_mAP(final_results, synset_names, degree_thresholds=[360]
 def plot_mAP(
     iou_aps,
     pose_aps,
-    out_dir,
     iou_thres_list,
     degree_thres_list,
-    shift_thres_list
+    shift_thres_list,
+    out_dir,
+    file_name='mAP.png'
 ):
     """ Draw iou 3d AP vs. iou thresholds.
     """
     import matplotlib.pyplot as plt
 
-    labels = ['bottle', 'bowl', 'camera', 'can', 'laptop', 'mug', 'mean', 'nocs']
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:pink', 'tab:olive', 'tab:purple', 'tab:red', 'tab:gray']
-    styles = ['-', '-', '-', '-', '-', '-', '--', ':']
+    # labels = ['bottle', 'bowl', 'camera', 'can', 'laptop', 'mug', 'mean', 'nocs']
+    labels = ['box', 'bottle', 'can', 'cup', 'remote', 
+              'teapot', 'cutlery', 'glass', 'shoe', 'tube', 'mean', 'nocs']
+    # colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:pink', 'tab:olive', 'tab:purple', 'tab:red', 'tab:gray']
+    # colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:pink', 'tab:olive', 'tab:purple', 'tab:brown', 'tab:gray', 'tab:cyan', 'tab:yellow' ,'tab:red', 'tab:gray']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf', '#000000', '#7f7f7f']
+    # styles = ['-', '-', '-', '-', '-', '-', '--', ':']
+    styles = ['-', '-', '-', '-', '-', 
+              '-', '-', '-', '-', '-', '--', ':']
 
     fig, (ax_iou, ax_degree, ax_shift) = plt.subplots(1, 3, figsize=(8, 3.5))
     # IoU subplot
@@ -929,7 +940,7 @@ def plot_mAP(
     ax_shift.legend(loc='lower right', fontsize='small')
     plt.tight_layout()
     # plt.show()
-    plt.savefig(os.path.join(out_dir, 'mAP.png'))
+    plt.savefig(os.path.join(out_dir, file_name))
     plt.close(fig)
     return
 
