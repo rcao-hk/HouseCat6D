@@ -1,1 +1,3 @@
-python train_housecat.py --gpus 2 --dataset housecat --mode ts --config config/housecat_restored_conf.yaml --depth_type 'restored_conf' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/housecat6d/hammer_dav2_complete_obs_iter_unc_cali_convgru_l1_only_0.2_l1+grad_sigma_conf_672x518/vitl' --conf_thres 0.3
+python train_housecat.py --gpus 2 --dataset housecat --mode ts --config config/housecat_restored_drnet.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/drnet_zs_448x448'
+
+# python train_housecat.py --gpus 1 --dataset housecat --mode ts --config config/housecat_gt.yaml --depth_type 'gt'

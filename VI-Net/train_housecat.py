@@ -55,6 +55,7 @@ def get_parser():
                         type=float,
                         default=0.1,
                         help="confidence threshold for restored_conf depth type")
+    parser.add_argument('--use_syn_depth', action='store_true', help='use uncertainty-aware scale normalization')
     args_cfg = parser.parse_args()
 
     return args_cfg
@@ -70,6 +71,7 @@ def init():
     cfg.depth_type = args.depth_type
     cfg.restored_depth_root = args.restored_depth_root
     cfg.conf_thres = args.conf_thres
+    cfg.use_syn_depth = args.use_syn_depth
     log_dir_dataset = cfg.log
     os.makedirs(log_dir_dataset, exist_ok=True)
     if cfg.mode == 'ts':
@@ -130,7 +132,8 @@ if __name__ == "__main__":
         img_length=cfg.img_length,
         depth_type=cfg.depth_type,
         restored_depth_root=cfg.restored_depth_root,
-        conf_thres=cfg.conf_thres)
+        conf_thres=cfg.conf_thres,
+        use_syn_depth=cfg.use_syn_depth)
     
     dataloader = torch.utils.data.DataLoader(
         dataset,

@@ -74,6 +74,7 @@ class HouseCat6DTrainingDataset(Dataset):
             depth_type='raw',
             restored_depth_root='',
             conf_thres=0.1,
+            use_syn_depth=False,
     ):
         self.config = config
         self.dataset = dataset
@@ -85,6 +86,7 @@ class HouseCat6DTrainingDataset(Dataset):
         self.depth_type = depth_type
         self.restored_depth_root = restored_depth_root
         self.conf_thres = conf_thres
+        self.use_syn_depth = use_syn_depth
         self.train_scenes_rgb = glob.glob(os.path.join(self.data_dir,'scene*','rgb'))
         self.train_scenes_rgb.sort()
         self.train_scenes_rgb = self.train_scenes_rgb[:seq_length] if seq_length != -1 else self.train_scenes_rgb[:]
@@ -96,15 +98,25 @@ class HouseCat6DTrainingDataset(Dataset):
                 content = file.read()
                 num_count = content.count('\n') + 1
             self.min_num = num_count if num_count < self.min_num else self.min_num
-        self.real_img_list = []
+        self.rgb_list = []
+        self.depth_list = []
+        self.real_flag_list = []
         for scene in self.train_scenes_rgb:
             img_paths = glob.glob(os.path.join(scene, '*.png'))
             img_paths.sort()
             img_paths = img_paths[:img_length] if img_length != -1 else img_paths[:]
             for img_path in img_paths:
-                self.real_img_list.append(img_path)
+                depth_path = img_path.replace('rgb','depth')
+                self.rgb_list.append(img_path)
+                self.depth_list.append(depth_path)
+                self.real_flag_list.append(True)
+                if self.use_syn_depth:
+                    syn_depth_path = img_path.replace('rgb','depth_gt')
+                    self.rgb_list.append(img_path)
+                    self.depth_list.append(syn_depth_path)
+                    self.real_flag_list.append(False)
 
-        print(f'{len(self.train_scenes_rgb)} sequences, {img_length} images per sequence. Total {len(self.real_img_list)} images are found.')
+        print(f'{len(self.train_scenes_rgb)} sequences, {img_length} images per sequence. Total {len(self.rgb_list)} images are found.')
 
         self.xmap = np.array([[i for i in range(1096)] for j in range(852)]) # 640x480
         self.ymap = np.array([[j for i in range(1096)] for j in range(852)])
@@ -114,11 +126,11 @@ class HouseCat6DTrainingDataset(Dataset):
 
 
     def __len__(self):
-        return len(self.real_img_list)
+        return len(self.depth_list)
 
         
     def reset(self):
-        num_real_img = len(self.real_img_list)
+        num_real_img = len(self.depth_list)
         self.img_index = np.arange(num_real_img)
         np.random.shuffle(self.img_index)
 
@@ -129,38 +141,44 @@ class HouseCat6DTrainingDataset(Dataset):
         return data_dict
         
     def _read_data(self, image_index):
-        img_path = os.path.join(self.data_dir, self.real_img_list[image_index])
+        img_path = os.path.join(self.data_dir, self.rgb_list[image_index])
         pol_path = img_path.replace('rgb','pol')
         real_intrinsics = np.loadtxt(os.path.join(img_path.split('rgb')[0], 'intrinsics.txt')).reshape(3,3)
         cam_fx, cam_fy, cam_cx, cam_cy = real_intrinsics[0,0], real_intrinsics[1,1], real_intrinsics[0,2], real_intrinsics[1,2]
 
-        if self.depth_type == 'raw':
-            depth_ = load_housecat_depth(img_path)
-            depth_ = fill_missing(depth_, self.norm_scale, 1)
-        elif self.depth_type == 'restored':
-            scene_name = img_path.split('/')[-3]
-            anno_idx = img_path.split('/')[-1].split('.')[0]
-            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
-            depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
-            if depth_ is None:
-                print(f"Warning: Restored depth not found for {restored_depth_path}. Using raw depth instead.")
+        if not self.use_syn_depth:
+            if self.depth_type == 'raw':
                 depth_ = load_housecat_depth(img_path)
                 depth_ = fill_missing(depth_, self.norm_scale, 1)
-        elif self.depth_type == 'restored_conf':
-            scene_name = img_path.split('/')[-3]
-            anno_idx = img_path.split('/')[-1].split('.')[0]
-            restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
-            depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
-            depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
-            depth_conf = np.load(depth_conf_path)
-        elif self.depth_type == 'gt':
-            gt_depth_path = img_path.replace('rgb', 'depth_gt')
-            depth_ = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
-            if depth_ is None:
-                print(f"Warning: GT depth not found for {gt_depth_path}. Using raw depth instead.")
-                depth_ = load_housecat_depth(img_path)
+            elif self.depth_type == 'restored':
+                scene_name = img_path.split('/')[-3]
+                anno_idx = img_path.split('/')[-1].split('.')[0]
+                restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+                depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+                if depth_ is None:
+                    print(f"Warning: Restored depth not found for {restored_depth_path}. Using raw depth instead.")
+                    depth_ = load_housecat_depth(img_path)
+                    depth_ = fill_missing(depth_, self.norm_scale, 1)
+            elif self.depth_type == 'restored_conf':
+                scene_name = img_path.split('/')[-3]
+                anno_idx = img_path.split('/')[-1].split('.')[0]
+                restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
+                depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
+                depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
+                depth_conf = np.load(depth_conf_path)
+            elif self.depth_type == 'gt':
+                gt_depth_path = img_path.replace('rgb', 'depth_gt')
+                depth_ = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
+                if depth_ is None:
+                    print(f"Warning: GT depth not found for {gt_depth_path}. Using raw depth instead.")
+                    depth_ = load_housecat_depth(img_path)
+                    depth_ = fill_missing(depth_, self.norm_scale, 1)
+        else:
+            depth_path = self.depth_list[image_index]
+            depth_ = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+            if self.real_flag_list[image_index]:
                 depth_ = fill_missing(depth_, self.norm_scale, 1)
-                
+    
         # mask
         with open(img_path.replace('rgb','labels').replace('.png','_label.pkl'), 'rb') as f:
             gts = cPickle.load(f)
@@ -203,7 +221,7 @@ class HouseCat6DTrainingDataset(Dataset):
             # else:
             #     choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num, replace=False)
 
-            if self.depth_type == 'restored_conf':
+            if not self.use_syn_depth and self.depth_type == 'restored_conf':
                 instance_depth_conf = depth_conf[rmin:rmax, cmin:cmax].reshape((-1, 1))[choose, :].copy()
                 choose_idx = uncertainty_guided_sampling_multimodal(instance_depth_conf, self.sample_num, self.conf_thres)
             else:
