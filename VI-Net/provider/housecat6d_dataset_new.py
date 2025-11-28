@@ -190,6 +190,9 @@ class HouseCat6DTrainingDataset(Dataset):
         rgb_ = cv2.imread(img_path)[:, :, :3]  # TODO 1096x852
         rgb_ = rgb_[:, :, ::-1]  # 480*640*3
 
+        if depth_.shape[0] != rgb_.shape[0] or depth_.shape[1] != rgb_.shape[1]:
+            depth_ = cv2.resize(depth_, (rgb_.shape[1], rgb_.shape[0]), interpolation=cv2.INTER_NEAREST)
+            
         # pol
         pol_ = cv2.imread(pol_path)[:, :, :3]
         pol_ = pol_[:, :, ::-1]

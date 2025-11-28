@@ -386,6 +386,9 @@ class HouseCat6DTestDataset():
         elif self.depth_type == 'gt':
             gt_depth_path = img_path.replace('rgb', 'depth_gt')
             depth = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
+
+        if depth.shape[0] != rgb.shape[0] or depth.shape[1] != rgb.shape[1]:
+            depth = cv2.resize(depth, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
             
         xmap = self.xmap
         ymap = self.ymap

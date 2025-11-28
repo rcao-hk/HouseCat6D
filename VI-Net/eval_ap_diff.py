@@ -87,7 +87,6 @@ def main(path_method1, path_method2, logger=None):
     iou_3d_aps_method1, pose_aps_method1 = compute_iou_3d_at_75(results_method1, synset_names, logger)
     iou_3d_aps_method2, pose_aps_method2 = compute_iou_3d_at_75(results_method2, synset_names, logger)
 
-
     # plot_mAP(
     #     iou_3d_aps_method1,
     #     pose_aps_method1,
@@ -138,10 +137,13 @@ def main(path_method1, path_method2, logger=None):
 
 # path_root = 
 # 示例路径
-path_method1 = os.path.join('VI-Net/log/housecat/results_raw')
-path_method2 = os.path.join('VI-Net/log/housecat/results_ours_vitl_restored_conf_0.1')
+# path_method1 = os.path.join('VI-Net/log/housecat/results_raw')
+# path_method2 = os.path.join('VI-Net/log/housecat/results_ours_vitl_restored_conf_0.1')
 # path_method1 = os.path.join('VI-Net/log/housecat_restored/results_ours_vitl_restored')
 # path_method2 = os.path.join('VI-Net/log/housecat_restored_conf_0.1/results_ours_vitl_restored_conf_0.1')
+
+path_method1 = os.path.join('VI-Net/log/housecat/results_raw')
+path_method2 = os.path.join('VI-Net/log/housecat_restored_conf_0.1/results_ours_vitl_restored_conf_0.1')
 
 # 运行并找到差异大的场景
 main(path_method1, path_method2)
