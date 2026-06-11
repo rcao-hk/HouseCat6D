@@ -9,8 +9,12 @@ from tqdm import tqdm
 import cv2
 
 # 你工程里的工具/评估函数（路径按你项目结构）
-from utils.draw_utils import get_3d_bbox, transform_coordinates_3d, calculate_2d_projections, compute_matches
-from utils.evaluation_utils import compute_independent_mAP
+from utils.draw_utils import (
+    get_3d_bbox, transform_coordinates_3d, calculate_2d_projections, compute_matches
+)
+from utils.evaluation_utils import (
+    compute_independent_mAP, compute_3d_matches
+)
 
 # ------------------------------------------------------------
 # 配置
@@ -18,57 +22,59 @@ from utils.evaluation_utils import compute_independent_mAP
 
 SCENES = ['test_scene1', 'test_scene2', 'test_scene3', 'test_scene4', 'test_scene5']
 
-# 用 HouseCat6D 的全量类别，保持与 pkl 内 gt_class_ids 对齐
 HOUSECAT_SYNS = ['BG', 'box', 'bottle', 'can', 'cup', 'remote',
                  'teapot', 'cutlery', 'glass', 'shoe', 'tube']
 
-# 仅评估 cutlery / glass
-ALLOWED_CLASS_NAMES = {'cutlery', 'glass'}
+ALLOWED_CLASS_NAMES = {'glass', 'cutlery'}
 ALLOWED_CLASS_IDS = [HOUSECAT_SYNS.index(n) for n in ALLOWED_CLASS_NAMES]  # -> [7, 8]
 
-# 重要路径（按需修改）
 dataset_root = '/mnt/DATA/robotarm/rcao/dataset/HouseCat6D'
 method_roots = {
     'raw':            'VI-Net/log/housecat/results_raw',
     'restored':       'VI-Net/log/housecat_restored/results_ours_vitl_restored',
     'restored_conf':  'VI-Net/log/housecat_restored_conf_0.1/results_ours_vitl_restored_conf_0.1',
 }
-ref_method  = 'restored_conf'
-base_method = 'restored'
-top_k = 50
-vis_root = 'vis_class_cutlery_glass'
+method3 = 'restored_conf'
+method2 = 'restored'
+method1 = 'raw'
 
+top_k = 50
+vis_root = 'vis_glass_cutlery'
 os.makedirs(vis_root, exist_ok=True)
 
+# IoU “匹配比例”阈值（你要的：>0.1, >0.25, >0.5, >0.75 的比值）
+IOU_RATIO_THRESHOLDS = [0.1, 0.25, 0.5, 0.75]
+
+
 # ------------------------------------------------------------
-# 数据加载 & 过滤
+# 数据加载
 # ------------------------------------------------------------
 
 def load_final_results_with_paths(root_path, scenes=SCENES):
-    """
-    返回:
-      final_results: List[dict]  (每个 sample 的结果字典)
-      pkl_paths:     List[str]   (与 final_results 一一对应的 .pkl 路径)
-    """
     result_pkl_list = []
     for scene in scenes:
         result_pkl_list.extend(glob.glob(os.path.join(root_path, scene, '*.pkl')))
     result_pkl_list = sorted(result_pkl_list)
 
+    if len(result_pkl_list) == 0:
+        raise RuntimeError(f"No pkls found under: {root_path}")
+
     final_results = []
-    pkl_paths     = []
+    pkl_paths = []
 
     for pkl_path in result_pkl_list:
         with open(pkl_path, 'rb') as f:
             result = cPickle.load(f)
 
         if isinstance(result, dict):
-            result['gt_handle_visibility'] = np.ones_like(result['gt_class_ids'])
+            if 'gt_handle_visibility' not in result or result['gt_handle_visibility'] is None:
+                result['gt_handle_visibility'] = np.ones_like(result['gt_class_ids'])
             final_results.append(result)
             pkl_paths.append(pkl_path)
         elif isinstance(result, list):
             for r in result:
-                r['gt_handle_visibility'] = np.ones_like(r['gt_class_ids'])
+                if 'gt_handle_visibility' not in r or r['gt_handle_visibility'] is None:
+                    r['gt_handle_visibility'] = np.ones_like(r['gt_class_ids'])
                 final_results.append(r)
                 pkl_paths.append(pkl_path)
         else:
@@ -77,39 +83,184 @@ def load_final_results_with_paths(root_path, scenes=SCENES):
     return final_results, pkl_paths
 
 
-def filter_results_by_classes(final_results, pkl_paths, allowed_class_ids):
-    keep_results, keep_paths = [], []
-    for r, p in zip(final_results, pkl_paths):
-        gt = np.asarray(r['gt_class_ids']).astype(np.int32)
-        if np.intersect1d(gt, allowed_class_ids).size > 0:
-            keep_results.append(r)
-            keep_paths.append(p)
-    return keep_results, keep_paths
+def filter_indices_by_allowed_gt(results_ref, allowed_class_ids):
+    """基于 GT 是否包含 allowed 类别来筛 sample（保证所有方法一致）"""
+    keep = []
+    for r in results_ref:
+        gt = np.asarray(r.get('gt_class_ids', [])).astype(np.int32)
+        keep.append(np.intersect1d(gt, allowed_class_ids).size > 0)
+    keep_idx = np.where(np.asarray(keep, dtype=bool))[0]
+    return keep_idx
 
 
 # ------------------------------------------------------------
-# 逐样本四个 pose 指标（5°2cm / 5°5cm / 10°2cm / 10°5cm）
+# IoU “匹配比例”计算：#(GT matched with IoU>=thr) / #(GT)
+# ------------------------------------------------------------
+# def compute_iou_match_ratio_per_class(result, synset_names, class_ids, thresholds):
+#     """
+#     返回:
+#       ratios: dict[cls_id] -> np.ndarray(shape=(len(thresholds),), float32)
+#       若该 cls 在该 sample 没有 GT，则对应全 NaN
+#     定义：
+#       对每个 cls，ratio(thr) = mean(gt_matches[thr_idx, :] > -1)
+#       即：该 cls 的 GT 有多少比例能被同类 pred 以 IoU>=thr 匹配到
+#     """
+#     gt_class_ids = np.asarray(result.get('gt_class_ids', [])).astype(np.int32)
+#     gt_RTs = np.asarray(result.get('gt_RTs', []))
+#     gt_scales = np.asarray(result.get('gt_scales', []))
+#     gt_handle_visibility = np.asarray(result.get('gt_handle_visibility', np.ones_like(gt_class_ids)))
+
+#     pred_class_ids = np.asarray(result.get('pred_class_ids', [])).astype(np.int32)
+#     pred_bboxes = np.asarray(result.get('pred_bboxes', np.zeros((len(pred_class_ids), 4), dtype=np.float32)))
+#     pred_scores = result.get('pred_scores', None)
+#     if pred_scores is None:
+#         pred_scores = np.ones((len(pred_class_ids),), dtype=np.float32)
+#     else:
+#         pred_scores = np.asarray(pred_scores).astype(np.float32)
+
+#     pred_RTs = np.asarray(result.get('pred_RTs', []))
+#     pred_scales = np.asarray(result.get('pred_scales', []))
+
+#     ratios = {}
+#     T = len(thresholds)
+
+#     for cls_id in class_ids:
+#         gmask = (gt_class_ids == cls_id)
+#         pmask = (pred_class_ids == cls_id)
+
+#         if np.sum(gmask) == 0:
+#             ratios[cls_id] = np.full((T,), np.nan, dtype=np.float32)
+#             continue
+
+#         cls_gt_class_ids = gt_class_ids[gmask]
+#         cls_gt_RTs = gt_RTs[gmask] if len(gt_RTs) else np.zeros((0, 4, 4))
+#         cls_gt_scales = gt_scales[gmask] if len(gt_scales) else np.zeros((0, 3))
+#         cls_gt_vis = gt_handle_visibility[gmask] if len(gt_handle_visibility) else np.ones((len(cls_gt_class_ids),))
+
+#         if np.sum(pmask) == 0:
+#             ratios[cls_id] = np.zeros((T,), dtype=np.float32)  # 有 GT 没 pred，则匹配比例为 0
+#             continue
+
+#         cls_pred_class_ids = pred_class_ids[pmask]
+#         cls_pred_bboxes = pred_bboxes[pmask] if len(pred_bboxes) else np.zeros((len(cls_pred_class_ids), 4))
+#         cls_pred_scores = pred_scores[pmask]
+#         cls_pred_RTs = pred_RTs[pmask] if len(pred_RTs) else np.zeros((len(cls_pred_class_ids), 4, 4))
+#         cls_pred_scales = pred_scales[pmask] if len(pred_scales) else np.zeros((len(cls_pred_class_ids), 3))
+
+#         gt_matches, pred_matches, overlaps, _ = compute_3d_matches(
+#             cls_gt_class_ids, cls_gt_RTs, cls_gt_scales, cls_gt_vis, synset_names,
+#             cls_pred_bboxes, cls_pred_class_ids, cls_pred_scores, cls_pred_RTs, cls_pred_scales,
+#             thresholds
+#         )
+
+#         # gt_matches: (T, num_gt)，> -1 表示该 GT 在该阈值下被匹配到
+#         num_gt = gt_matches.shape[1]
+#         if num_gt == 0:
+#             ratios[cls_id] = np.full((T,), np.nan, dtype=np.float32)
+#         else:
+#             r = (gt_matches > -1).mean(axis=1).astype(np.float32)  # (T,)
+#             ratios[cls_id] = r
+
+#     return ratios
+
+
+def compute_mean_iou_per_class(
+    result, synset_names, class_ids,
+    match_iou_thres=0.0,     # 用于“是否允许匹配”的阈值；0 就表示只要 IoU>0 就可匹配
+    penalize_miss=True       # True: 未匹配GT记0（惩罚漏检）；False: 只对匹配到的GT求均值
+):
+    """
+    返回:
+      mean_ious: dict[cls_id] -> float (该sample该类的平均IoU)
+      若该 cls 在该 sample 没有 GT，则为 NaN
+    """
+    gt_class_ids = np.asarray(result.get('gt_class_ids', [])).astype(np.int32)
+    gt_RTs = np.asarray(result.get('gt_RTs', []))
+    gt_scales = np.asarray(result.get('gt_scales', []))
+    gt_vis = np.asarray(result.get('gt_handle_visibility', np.ones_like(gt_class_ids)))
+
+    pred_class_ids = np.asarray(result.get('pred_class_ids', [])).astype(np.int32)
+    pred_bboxes = np.asarray(result.get('pred_bboxes', np.zeros((len(pred_class_ids), 4), dtype=np.float32)))
+    pred_scores = result.get('pred_scores', None)
+    pred_scores = np.ones((len(pred_class_ids),), dtype=np.float32) if pred_scores is None else np.asarray(pred_scores).astype(np.float32)
+    pred_RTs = np.asarray(result.get('pred_RTs', []))
+    pred_scales = np.asarray(result.get('pred_scales', []))
+
+    mean_ious = {}
+
+    for cls_id in class_ids:
+        gmask = (gt_class_ids == cls_id)
+        pmask = (pred_class_ids == cls_id)
+
+        num_gt = int(np.sum(gmask))
+        if num_gt == 0:
+            mean_ious[cls_id] = np.nan
+            continue
+
+        # 取出该类的 GT / Pred
+        cls_gt_ids = gt_class_ids[gmask]
+        cls_gt_RTs = gt_RTs[gmask]
+        cls_gt_scales = gt_scales[gmask]
+        cls_gt_vis = gt_vis[gmask]
+
+        if np.sum(pmask) == 0:
+            mean_ious[cls_id] = 0.0 if penalize_miss else np.nan
+            continue
+
+        cls_pred_ids = pred_class_ids[pmask]
+        cls_pred_bboxes = pred_bboxes[pmask]
+        cls_pred_scores = pred_scores[pmask]
+        cls_pred_RTs = pred_RTs[pmask]
+        cls_pred_scales = pred_scales[pmask]
+
+        # 用 compute_3d_matches 拿到 overlaps + 1-1 matching 结果
+        gt_matches, pred_matches, overlaps, _ = compute_3d_matches(
+            cls_gt_ids, cls_gt_RTs, cls_gt_scales, cls_gt_vis, synset_names,
+            cls_pred_bboxes, cls_pred_ids, cls_pred_scores, cls_pred_RTs, cls_pred_scales,
+            iou_3d_thresholds=[match_iou_thres]
+        )
+
+        # gt_matches: (1, num_gt). 其中 gt_matches[0,j] = matched_pred_index or -1
+        m = gt_matches[0]
+        ious = np.zeros((num_gt,), dtype=np.float32)
+        matched_mask = (m > -1)
+        if np.any(matched_mask):
+            pred_idx = m[matched_mask].astype(np.int32)
+            gt_idx = np.where(matched_mask)[0].astype(np.int32)
+            ious[matched_mask] = overlaps[pred_idx, gt_idx].astype(np.float32)
+
+        if penalize_miss:
+            mean_ious[cls_id] = float(np.mean(ious))               # 未匹配的GT贡献0
+        else:
+            mean_ious[cls_id] = float(np.mean(ious[matched_mask])) if np.any(matched_mask) else 0.0
+
+    return mean_ious
+
+# ------------------------------------------------------------
+# 逐样本 pose 指标 + iou_ratio 指标
 # ------------------------------------------------------------
 
 def compute_sample_pose_scores(
     final_results,
     synset_names,
+    allowed_class_ids=None,
     degree_thresholds=[5, 10],
     shift_thresholds=[2, 5],
     iou_3d_thresholds=[0.1, 0.25, 0.5, 0.75],
     iou_pose_thres=0.1,
+    iou_ratio_thresholds=IOU_RATIO_THRESHOLDS,
 ):
     """
-    对 final_results 中的每个 sample 单独调用一次 compute_independent_mAP([result]),
-    返回:
-      scores: (N_samples, num_classes+1, 4)
-      metrics_names: ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
+    scores: (N, C+1, K)
+      0..3:  pose AP: [5d2cm, 5d5cm, 10d2cm, 10d5cm]
+      4..6:  3D IoU AP(mean): [@0.25, @0.5, @0.75]  (沿用你原逻辑 iou_3d_aps[-1,*])
+      7..10: iou_match_ratio(按GT计): [>0.1, >0.25, >0.5, >0.75] (只对 allowed_class_ids 填；其余 NaN)
     """
     num_samples = len(final_results)
     num_classes = len(synset_names)
 
     if num_samples == 0:
-        return np.zeros((0, num_classes + 1, 4), dtype=np.float32), ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
+        return np.zeros((0, num_classes + 1, 11), dtype=np.float32), ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
 
     degree_thres_list = list(degree_thresholds) + [360]
     shift_thres_list  = list(shift_thresholds) + [100]
@@ -118,11 +269,15 @@ def compute_sample_pose_scores(
     idx_s2  = shift_thres_list.index(2)
     idx_s5  = shift_thres_list.index(5)
 
-    metrics_names = ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
-    scores = np.full((num_samples, num_classes + 1, 4), np.nan, dtype=np.float32)
+    idx_iou25 = iou_3d_thresholds.index(0.25)
+    idx_iou50 = iou_3d_thresholds.index(0.5)
+    idx_iou75 = iou_3d_thresholds.index(0.75)
 
-    for s_idx, result in enumerate(tqdm(final_results, desc="compute per-sample pose scores")):
-        _, pose_aps = compute_independent_mAP(
+    scores = np.full((num_samples, num_classes + 1, 11), np.nan, dtype=np.float32)
+
+    for s_idx, result in enumerate(tqdm(final_results, desc="compute per-sample scores")):
+        # ---- 1) pose AP / iou AP（沿用 compute_independent_mAP）----
+        out = compute_independent_mAP(
             [result],
             synset_names,
             degree_thresholds=degree_thresholds,
@@ -132,7 +287,11 @@ def compute_sample_pose_scores(
             use_matches_for_pose=True,
             logger=None
         )
-        # pose_aps: (num_classes+1, D, S)
+        if isinstance(out, tuple) and len(out) == 3:
+            iou_3d_aps, _, pose_aps = out
+        else:
+            iou_3d_aps, pose_aps = out
+
         m0 = pose_aps[:, idx_d5,  idx_s2]   # 5° 2cm
         m1 = pose_aps[:, idx_d5,  idx_s5]   # 5° 5cm
         m2 = pose_aps[:, idx_d10, idx_s2]   # 10° 2cm
@@ -143,61 +302,100 @@ def compute_sample_pose_scores(
         scores[s_idx, :, 2] = m2
         scores[s_idx, :, 3] = m3
 
-    return scores, metrics_names
+        scores[s_idx, :, 4] = iou_3d_aps[:, idx_iou25]
+        scores[s_idx, :, 5] = iou_3d_aps[:, idx_iou50]
+        scores[s_idx, :, 6] = iou_3d_aps[:, idx_iou75]
+
+        # ---- 2) iou “匹配比例” （只按 allowed_class_ids 计算并填入 7..10）----
+        # if allowed_class_ids is not None and len(allowed_class_ids) > 0:
+        #     ratios = compute_iou_match_ratio_per_class(
+        #         result, synset_names, allowed_class_ids, iou_ratio_thresholds
+        #     )
+        #     for cls_id in allowed_class_ids:
+        #         v = ratios.get(cls_id, None)
+        #         if v is None:
+        #             continue
+        #         scores[s_idx, cls_id, 7:7+len(iou_ratio_thresholds)] = v
+
+        #     # 可选：填 mean 行（只对 allowed 类做 mean），方便 debug
+        #     scores[s_idx, -1, 7]  = np.nanmean(scores[s_idx, allowed_class_ids, 7])
+        #     scores[s_idx, -1, 8]  = np.nanmean(scores[s_idx, allowed_class_ids, 8])
+        #     scores[s_idx, -1, 9]  = np.nanmean(scores[s_idx, allowed_class_ids, 9])
+        #     scores[s_idx, -1, 10] = np.nanmean(scores[s_idx, allowed_class_ids, 10])
+
+        # ---- 用 IoU 值（mean IoU）填入 scores[..., 10] ----
+        if allowed_class_ids is not None and len(allowed_class_ids) > 0:
+            mean_ious = compute_mean_iou_per_class(
+                result, synset_names, allowed_class_ids,
+                match_iou_thres=0.0,
+                penalize_miss=True
+            )
+            for cls_id in allowed_class_ids:
+                scores[s_idx, cls_id, 10] = mean_ious.get(cls_id, np.nan)
+
+            # mean 行（只对 allowed 类平均），方便后续直接用
+            scores[s_idx, -1, 10] = np.nanmean(scores[s_idx, allowed_class_ids, 10])
+
+    return scores, ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
 
 
 def collect_scores_for_methods(method_roots, synset_names, allowed_class_ids=None):
     """
-    method_roots: dict{name: root_path}
-    返回:
-      results_dict[name] = final_results (list of dict, 已过滤 & 对齐)
-      paths_dict[name]   = pkl_paths   (list of str, 已过滤 & 对齐)
-      scores_dict[name]  = scores (N, C+1, 4)
-      metrics_names      = ['5d_2cm', '5d_5cm', '10d_2cm', '10d_5cm']
+    关键改动（为避免你之前 raw 过滤为空）：
+      - 先加载所有方法，不做 per-method 过滤
+      - 先对齐 common_keys
+      - 再基于对齐后“参考方法”的 GT 做 allowed_class_ids 过滤，并同步到所有方法
     """
-    results_dict = {}
-    paths_dict   = {}
-    scores_dict  = {}
-    metrics_names = None
-
-    # 1) 先加载 & 类别过滤
     loaded = {}
+    key_map = {}
+
+    # 1) load (unfiltered)
     for name, root in method_roots.items():
         final_results, pkl_paths = load_final_results_with_paths(root)
-        if allowed_class_ids is not None:
-            final_results, pkl_paths = filter_results_by_classes(final_results, pkl_paths, allowed_class_ids)
-        if len(final_results) == 0:
-            raise RuntimeError(f"[{name}] 在 {root} 下没有符合筛选条件的样本（可能没有 pkl，或没有 cutlery/glass GT）")
+        keys = [os.path.relpath(p, root) for p in pkl_paths]
         loaded[name] = (final_results, pkl_paths)
-
-    # 2) 对齐样本（取公共相对路径键）
-    key_map = {}
-    for name, (fr, paths) in loaded.items():
-        keys = [os.path.relpath(p, method_roots[name]) for p in paths]
         key_map[name] = keys
 
+    # 2) align common keys
     common_keys = set.intersection(*[set(v) for v in key_map.values()])
     if len(common_keys) == 0:
-        raise RuntimeError("不同方法在过滤后没有共同样本，请检查路径或筛选条件。")
+        raise RuntimeError("不同方法没有共同样本，请检查各方法结果目录结构是否一致。")
     common_keys = sorted(common_keys)
 
-    for name, (fr, paths) in loaded.items():
+    results_dict, paths_dict, scores_dict = {}, {}, {}
+
+    for name, root in method_roots.items():
+        fr, paths = loaded[name]
         keys = key_map[name]
-        key2idx = {k:i for i,k in enumerate(keys)}
+        key2idx = {k: i for i, k in enumerate(keys)}
         sel_idx = [key2idx[k] for k in common_keys]
 
-        final_results = [fr[i]    for i in sel_idx]
-        pkl_paths     = [paths[i] for i in sel_idx]
+        results_dict[name] = [fr[i] for i in sel_idx]
+        paths_dict[name] = [paths[i] for i in sel_idx]
 
-        results_dict[name] = final_results
-        paths_dict[name]   = pkl_paths
+    # 3) filter by GT classes (based on ref method)
+    if allowed_class_ids is not None:
+        ref_name = next(iter(method_roots.keys()))
+        keep_idx = filter_indices_by_allowed_gt(results_dict[ref_name], allowed_class_ids)
+        if len(keep_idx) == 0:
+            raise RuntimeError(f"对齐后仍没有包含 {allowed_class_ids} 的样本，请检查数据/类别ID。")
 
+        for name in method_roots.keys():
+            results_dict[name] = [results_dict[name][i] for i in keep_idx]
+            paths_dict[name] = [paths_dict[name][i] for i in keep_idx]
+
+    # 4) compute scores
+    metrics_names = None
+    for name in method_roots.keys():
         scores, metrics_names = compute_sample_pose_scores(
-            final_results, synset_names,
+            results_dict[name],
+            synset_names,
+            allowed_class_ids=allowed_class_ids,
             degree_thresholds=[5, 10],
             shift_thresholds=[2, 5],
             iou_3d_thresholds=[0.1, 0.25, 0.5, 0.75],
-            iou_pose_thres=0.1
+            iou_pose_thres=0.1,
+            iou_ratio_thresholds=IOU_RATIO_THRESHOLDS
         )
         scores_dict[name] = scores
 
@@ -205,77 +403,89 @@ def collect_scores_for_methods(method_roots, synset_names, allowed_class_ids=Non
 
 
 # ------------------------------------------------------------
-# Top-K 样本筛选（仅聚合 cutlery/glass 两类）
+# Top-K 筛选：用 iou_match_ratio@0.75 作为 method_score 做优势排序
 # ------------------------------------------------------------
 
 def find_topk_samples_advantage_multi(
     scores_dict,
     paths_dict,
-    ref_method,
-    base_method,
+    method1,
+    method2,
+    method3,
     allowed_class_ids,
     top_k=10
 ):
-    # 任一方法的形状
-    scores_ref  = scores_dict[ref_method]
-    scores_base = scores_dict[base_method]
-    N, Cplus1, M = scores_ref.shape
+    scores_m1 = scores_dict[method1]
+    scores_m2 = scores_dict[method2]
+    scores_m3 = scores_dict[method3]
 
-    def per_sample_score(scores):
-        sub = scores[:, allowed_class_ids, :]  # (N, K, 4)
-        return np.nanmean(sub, axis=(1, 2))    # (N,)
+    # 这里用 iou_match_ratio@0.75（按GT匹配比例）
+    # OVERLAP75_IDX = 10  # scores[..., 10] 是 iou_ratio > 0.75
 
-    score_ref  = per_sample_score(scores_ref)
-    score_base = per_sample_score(scores_base)
-    deltas = score_ref - score_base
+    # def per_sample_overlap75(scores):
+    #     # (N, K) -> (N,)
+    #     sub = scores[:, allowed_class_ids, OVERLAP75_IDX]
+    #     return np.nanmean(sub, axis=1)
+
+    # score1 = per_sample_overlap75(scores_m1)
+    # score2 = per_sample_overlap75(scores_m2)
+    # score3 = per_sample_overlap75(scores_m3)
+    
+    MEAN_IOU_IDX = 10
+
+    def per_sample_iou(scores):
+        sub = scores[:, allowed_class_ids, MEAN_IOU_IDX]  # (N,K)
+        return np.nanmean(sub, axis=1)                    # (N,)
+
+    score1 = per_sample_iou(scores_m1)
+    score2 = per_sample_iou(scores_m2)
+    score3 = per_sample_iou(scores_m3)
+
+    # 你原来的 delta 公式（尽量不改）
+    deltas = 0.3 * (score3 - score2) + 0.7 * (score2 - score1)
 
     valid_idx = np.where(~np.isnan(deltas))[0]
     sorted_valid = valid_idx[np.argsort(deltas[valid_idx])[::-1]]
     topk_idx = sorted_valid[:top_k]
 
-    pkl_paths_example = paths_dict[ref_method]
+    pkl_paths_example = paths_dict[method3]
     topk_info = []
+
     for rank, s in enumerate(topk_idx):
         p = pkl_paths_example[s]
-        scene_name  = os.path.basename(os.path.dirname(p))
+        scene_name = os.path.basename(os.path.dirname(p))
         sample_name = os.path.splitext(os.path.basename(p))[0]
-        method_scores = {m: float(np.nanmean(sc[s, allowed_class_ids, :])) for m, sc in scores_dict.items()}
+
+        # 记录每个方法在该 sample 的 iou_ratio@{0.1,0.25,0.5,0.75}（对 allowed 类取 mean）
+        method_iou_ratios = {}
+        for m, sc in scores_dict.items():
+            r01 = float(np.nanmean(sc[s, allowed_class_ids, 7]))
+            r25 = float(np.nanmean(sc[s, allowed_class_ids, 8]))
+            r50 = float(np.nanmean(sc[s, allowed_class_ids, 9]))
+            r75 = float(np.nanmean(sc[s, allowed_class_ids, 10]))
+            method_iou_ratios[m] = (r01, r25, r50, r75)
+
         topk_info.append({
-            'rank':       int(rank + 1),
-            'index':      int(s),
-            'scene':      scene_name,
-            'sample':     sample_name,
-            'delta_ref_base': float(deltas[s]),
-            'ref_score':  float(score_ref[s]),
-            'base_score': float(score_base[s]),
-            'method_scores': method_scores,
-            'pkl_path':   p,
+            'rank': int(rank + 1),
+            'index': int(s),
+            'scene': scene_name,
+            'sample': sample_name,
+            'delta': float(deltas[s]),
+            'method1_score': float(score1[s]),   # overlap75
+            'method2_score': float(score2[s]),   # overlap75
+            'method3_score': float(score3[s]),   # overlap75
+            'method_iou_ratios': method_iou_ratios,
+            'pkl_path': p,
         })
+
     return topk_info
 
 
-def print_topk_summary(topk_info, ref_method, base_method):
-    print(f"\nTop-{len(topk_info)} samples where {ref_method} beats {base_method} the most (mean of 4 pose metrics on cutlery/glass):")
-    for info in topk_info:
-        print(f"[{info['rank']:02d}] idx={info['index']:05d}, "
-              f"{info['scene']}/{info['sample']}, "
-              f"Δ={info['delta_ref_base']*100:.2f} "
-              f"({ref_method}={info['ref_score']*100:.2f}, {base_method}={info['base_score']*100:.2f})")
-        for m, v in info['method_scores'].items():
-            print(f"      {m}: {v*100:.2f}")
-
-
 # ------------------------------------------------------------
-# 可视化（单图叠加 GT / Pred，不画轴，仅画 3D bbox）
+# 可视化（保持你原来的 bbox 代码）
 # ------------------------------------------------------------
 
 def to_points_8x2(projected_bbox):
-    """
-    将 projected_bbox 规范为 (8,2) 的 int32。
-    支持输入形状:
-      - (2,8)/(3,8)  -> 取前2行转置
-      - (8,2)/(8,3)  -> 取前2列
-    """
     pb = np.asarray(projected_bbox)
     if pb.ndim != 2:
         return None
@@ -293,38 +503,28 @@ def to_points_8x2(projected_bbox):
 
 
 def draw_bbox(img, imgpts, color):
-    """
-    使用你给的风格画 3D bbox（地面/立柱/顶部，三层颜色深浅）
-    imgpts: (8,2) int32
-    """
     imgpts = np.int32(imgpts).reshape(-1, 2)
 
-    # ground（底面）浅色
     color_ground = (int(color[0] * 0.3), int(color[1] * 0.3), int(color[2] * 0.3))
-    for i, j in zip([4, 5, 6, 7],[5, 7, 4, 6]):
+    for i, j in zip([4, 5, 6, 7], [5, 7, 4, 6]):
         img = cv2.line(img, tuple(imgpts[i]), tuple(imgpts[j]), color_ground, 3)
 
-    # pillars（立柱）中等
-    color_pillar = (int(color[0]*0.6), int(color[1]*0.6), int(color[2]*0.6))
+    color_pillar = (int(color[0] * 0.6), int(color[1] * 0.6), int(color[2] * 0.6))
     for i, j in zip(range(4), range(4, 8)):
         img = cv2.line(img, tuple(imgpts[i]), tuple(imgpts[j]), color_pillar, 3)
 
-    # top（顶面）原色
-    for i, j in zip([0, 1, 2, 3],[1, 3, 0, 2]):
+    for i, j in zip([0, 1, 2, 3], [1, 3, 0, 2]):
         img = cv2.line(img, tuple(imgpts[i]), tuple(imgpts[j]), color, 3)
-
     return img
 
 
 def _filter_result_to_allowed_classes(result, allowed_class_ids):
-    out = dict(result)  # 浅拷贝
-    # GT
+    out = dict(result)
     if 'gt_class_ids' in result and result['gt_class_ids'] is not None:
         gmask = np.isin(result['gt_class_ids'], allowed_class_ids)
         for k in ['gt_class_ids', 'gt_bboxes', 'gt_RTs', 'gt_scales', 'gt_handle_visibility']:
             if k in result and result[k] is not None:
                 out[k] = np.asarray(result[k])[gmask]
-    # PRED
     if 'pred_class_ids' in result and result['pred_class_ids'] is not None:
         pmask = np.isin(result['pred_class_ids'], allowed_class_ids)
         for k in ['pred_class_ids', 'pred_bboxes', 'pred_RTs', 'pred_scales', 'pred_scores', 'pred_mask']:
@@ -337,16 +537,10 @@ def draw_detections(image, save_dir, image_name, intrinsics,
                     gt_bbox, gt_class_ids, gt_mask, gt_RTs, gt_scales,
                     pred_bbox, pred_class_ids, pred_mask, pred_RTs, pred_scores, pred_scales,
                     draw_gt=False, draw_pred=True):
-    """
-    - GT 和 Pred 叠加在一张图上
-    - 不画 xyz 轴，只画 3D bbox
-    - 输出文件：{image_name}_bbox.png
-    """
     os.makedirs(save_dir, exist_ok=True)
     output_path = os.path.join(save_dir, f'{image_name}_bbox.png')
     draw_image_bbox = image.copy()
 
-    # 画 GT（绿色）
     if draw_gt and gt_RTs is not None and gt_scales is not None:
         for ind, RT in enumerate(gt_RTs):
             bbox_3d = get_3d_bbox(gt_scales[ind], 0)
@@ -356,11 +550,9 @@ def draw_detections(image, save_dir, image_name, intrinsics,
             if pts8 is not None:
                 draw_image_bbox = draw_bbox(draw_image_bbox, pts8, (0, 255, 0))
 
-    # 画 Pred（红色）
     if draw_pred and pred_class_ids is not None and len(pred_class_ids) > 0:
         num_pred_instances = len(pred_class_ids)
 
-        # 可选：按你原逻辑做匹配，重排 pred_RTs / pred_scales
         if (gt_class_ids is not None and gt_bbox is not None and
             pred_bbox is not None and pred_scores is not None):
             try:
@@ -370,10 +562,10 @@ def draw_detections(image, save_dir, image_name, intrinsics,
                     0.5
                 )
                 if len(pred_indices):
-                    pred_RTs    = pred_RTs[pred_indices]
+                    pred_RTs = pred_RTs[pred_indices]
                     pred_scales = pred_scales[pred_indices]
             except Exception:
-                pass  # 有些实现里 mask 为 None 也能跑；不稳定就跳过重排
+                pass
 
         if pred_RTs is not None and pred_scales is not None:
             for ind in range(num_pred_instances):
@@ -385,49 +577,42 @@ def draw_detections(image, save_dir, image_name, intrinsics,
                 if pts8 is not None:
                     draw_image_bbox = draw_bbox(draw_image_bbox, pts8, (255, 0, 0))
 
-    # image 是 RGB，这里保存前转 BGR
     cv2.imwrite(output_path, draw_image_bbox[:, :, ::-1])
 
 
 def visualize_topk_bboxes(
     topk_info,
     results_dict,
-    intrinsics_dict,   # scene_name -> intrinsics.txt
+    intrinsics_dict,
     save_path_root,
     dataset_root,
     allowed_class_ids
 ):
-    """
-    对 top-k samples，遍历所有方法，各画一张 bbox 可视化图（同一张 RGB；GT+Pred 叠加）
-    """
     os.makedirs(save_path_root, exist_ok=True)
 
     for info in topk_info:
-        idx   = info['index']
+        idx = info['index']
         scene = info['scene']
-        sample= info['sample']
-        diff  = info['delta_ref_base']
+        sample = info['sample']
 
-        # RGB 路径（统一用 dataset_root/scene/rgb/sample.png）
         image_path = os.path.join(dataset_root, scene, 'rgb', f'{sample}.png')
-        image = cv2.imread(image_path)[:, :, :3]  # BGR
-        image = image[:, :, ::-1]                # 转 RGB
+        image = cv2.imread(image_path)[:, :, :3]
+        image = image[:, :, ::-1]
 
-        # 内参
         if scene not in intrinsics_dict:
-            raise ValueError(f"scene {scene} not in intrinsics_dict, please check naming.")
+            raise ValueError(f"scene {scene} not in intrinsics_dict")
         intrinsics = np.loadtxt(intrinsics_dict[scene]).reshape(3, 3)
 
-        # 每个方法单独输出一张
         for m_name, final_results in results_dict.items():
             result = final_results[idx]
-            # 只保留允许类别（cutlery/glass）
             result_f = _filter_result_to_allowed_classes(result, allowed_class_ids)
 
             out_dir = os.path.join(save_path_root, f'draw_{m_name}')
             os.makedirs(out_dir, exist_ok=True)
 
-            save_name = f"{scene}_{sample}_{m_name}_delta{diff:.3f}"
+            # 用 overlap75 做文件名（更直观）
+            r01, r25, r50, r75 = info['method_iou_ratios'][m_name]
+            save_name = f"{scene}_{sample}_{m_name}_r75_{r75:.3f}_delta_{info['delta']:.3f}"
 
             draw_detections(
                 image.copy(),
@@ -451,37 +636,39 @@ def visualize_topk_bboxes(
 
 
 # ------------------------------------------------------------
-# 构造 intrinsics 映射并执行
+# 入口
 # ------------------------------------------------------------
 
 if __name__ == "__main__":
-    # scene_name -> intrinsics.txt
     test_scenes_rgb = sorted(glob.glob(os.path.join(dataset_root, 'test_scene*', 'rgb')))
     intrinsics_dict = {}
     for rgb_dir in test_scenes_rgb:
-        scene_dir = os.path.dirname(rgb_dir)          # /.../test_sceneX
-        scene_name = os.path.basename(scene_dir)      # test_sceneX
-        intr_path = os.path.join(scene_dir, 'intrinsics.txt')
-        intrinsics_dict[scene_name] = intr_path
+        scene_dir = os.path.dirname(rgb_dir)
+        scene_name = os.path.basename(scene_dir)
+        intrinsics_dict[scene_name] = os.path.join(scene_dir, 'intrinsics.txt')
 
-    # 计算多方法对齐后的 per-sample scores（仅 cutlery/glass）
     results_dict, paths_dict, scores_dict, metrics_names = collect_scores_for_methods(
         method_roots, HOUSECAT_SYNS, allowed_class_ids=ALLOWED_CLASS_IDS
     )
 
-    # 选出 ref 相对 base 优势最大的 top-k 样本
     topk_info = find_topk_samples_advantage_multi(
         scores_dict,
         paths_dict,
-        ref_method=ref_method,
-        base_method=base_method,
+        method1=method1,
+        method2=method2,
+        method3=method3,
         allowed_class_ids=ALLOWED_CLASS_IDS,
         top_k=top_k
     )
 
-    print_topk_summary(topk_info, ref_method=ref_method, base_method=base_method)
+    # 简单打印一下 top-k（每个方法的 iou_ratio@0.1/0.25/0.5/0.75）
+    print(f"\nTop-{len(topk_info)} by overlap@0.75 advantage (allowed classes={ALLOWED_CLASS_NAMES}):")
+    for t in topk_info[:min(10, len(topk_info))]:
+        print(f"[{t['rank']:02d}] {t['scene']}/{t['sample']} idx={t['index']:05d}  Δ={t['delta']:.3f}")
+        for m in [method1, method2, method3]:
+            r01, r25, r50, r75 = t['method_iou_ratios'][m]
+            print(f"    {m:>12s}: r@0.1={r01:.3f}, r@0.25={r25:.3f}, r@0.5={r50:.3f}, r@0.75={r75:.3f}")
 
-    # 可视化叠加 GT/Pred bbox
     visualize_topk_bboxes(
         topk_info,
         results_dict,

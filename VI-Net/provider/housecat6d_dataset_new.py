@@ -164,8 +164,12 @@ class HouseCat6DTrainingDataset(Dataset):
                 anno_idx = img_path.split('/')[-1].split('.')[0]
                 restored_depth_path = os.path.join(self.restored_depth_root, scene_name, '{}_depth.png'.format(anno_idx))
                 depth_ = cv2.imread(restored_depth_path, cv2.IMREAD_UNCHANGED)
-                depth_conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
-                depth_conf = np.load(depth_conf_path)
+                conf_path = os.path.join(self.restored_depth_root, scene_name, '{}_conf.npy'.format(anno_idx))
+                conf_path = conf_path if os.path.exists(conf_path) else conf_path.replace('_conf.npy', '_conf.npz')
+                if conf_path.endswith('.npz'):
+                    depth_conf = np.load(conf_path)['conf']
+                else:
+                    depth_conf = np.load(conf_path)
             elif self.depth_type == 'gt':
                 gt_depth_path = img_path.replace('rgb', 'depth_gt')
                 depth_ = cv2.imread(gt_depth_path, cv2.IMREAD_UNCHANGED)
@@ -225,6 +229,9 @@ class HouseCat6DTrainingDataset(Dataset):
             #     choose_idx = np.random.choice(np.arange(len(choose)), self.sample_num, replace=False)
 
             if not self.use_syn_depth and self.depth_type == 'restored_conf':
+                img_width, img_length = depth_.shape[1], depth_.shape[0]
+                if depth_conf.shape[0] != img_length or depth_conf.shape[1] != img_width:
+                    depth_conf = cv2.resize(depth_conf, (img_width, img_length), interpolation=cv2.INTER_NEAREST)
                 instance_depth_conf = depth_conf[rmin:rmax, cmin:cmax].reshape((-1, 1))[choose, :].copy()
                 choose_idx = uncertainty_guided_sampling_multimodal(instance_depth_conf, self.sample_num, self.conf_thres)
             else:

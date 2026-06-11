@@ -4,8 +4,8 @@ resolution: 64
 ds_rate: 2
 seq_length: -1
 img_length: -1
-log: log/housecat_restored_seed1
-max_epoch : 40
+log: log/housecat_restored_conf_seed0_0.1
+max_epoch : 60
 
 optimizer:
   type : Adam
@@ -42,7 +42,7 @@ train_dataloader:
 test:
   sample_num: 2048
   data_dir: /mnt/DATA/robotarm/rcao/dataset/HouseCat6D
-  log_dir: log/housecat_restored_seed1
+  log_dir: log/housecat_restored_conf_seed0_0.1
 
 
 per_val: 10

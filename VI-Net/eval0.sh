@@ -1,3 +1,5 @@
 # python test_housecat.py --gpus '0' --test_epoch 40 --method_suffix drent_restored --dataset housecat --config config/housecat_restored_drnet.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/drnet_zs_448x448'
 
-python test_housecat.py --gpus '0' --test_epoch 40 --method_suffix d3roma_restored --dataset housecat --config config/housecat_restored_d3roma.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/d3roma_zs_360x640'
+CUDA_VISIBLE_DEVICES=1 python test_housecat.py --test_epoch 20 --method_suffix d3roma_restored --dataset housecat --config config/housecat_restored_cdm.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/cdm_d435_zs_518x518'
+
+CUDA_VISIBLE_DEVICES=1 python test_housecat.py --test_epoch 30 --method_suffix d3roma_restored --dataset housecat --config config/housecat_restored_cdm.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/cdm_d435_zs_518x518'

@@ -694,7 +694,8 @@ def compute_independent_mAP(final_results, synset_names, degree_thresholds=[360]
                            for _ in range(num_classes)]
     iou_gt_matches_all = [np.zeros((num_iou_thres, 0))
                           for _ in range(num_classes)]
-
+    iou_overlaps_all = []
+    
     pose_aps = np.zeros((num_classes + 1, num_degree_thres, num_shift_thres))
     pose_pred_matches_all = [
         np.zeros((num_degree_thres, num_shift_thres, 0)) for _ in range(num_classes)]
@@ -744,7 +745,7 @@ def compute_independent_mAP(final_results, synset_names, degree_thresholds=[360]
             # calculate the overlap between each gt instance and pred instance
             cls_gt_handle_visibility = np.ones_like(cls_gt_class_ids)
 
-            iou_cls_gt_match, iou_cls_pred_match, _, iou_pred_indices = compute_3d_matches(cls_gt_class_ids, cls_gt_RTs, cls_gt_scales, cls_gt_handle_visibility, synset_names,
+            iou_cls_gt_match, iou_cls_pred_match, iou_overlap, iou_pred_indices = compute_3d_matches(cls_gt_class_ids, cls_gt_RTs, cls_gt_scales, cls_gt_handle_visibility, synset_names,
                                                                                            cls_pred_bboxes, cls_pred_class_ids, cls_pred_scores, cls_pred_RTs, cls_pred_scales,
                                                                                            iou_thres_list)
             if len(iou_pred_indices):
@@ -875,7 +876,7 @@ def compute_independent_mAP(final_results, synset_names, degree_thresholds=[360]
     #         i+1, pose_aps[i+1, degree_thres_list.index(5), shift_thres_list.index(5)] * 100))
     #     print('{} - 10 degree, 5cm: {:.1f}'.format(
     #         i+1, pose_aps[i+1, degree_thres_list.index(10), shift_thres_list.index(5)] * 100))
-    return iou_3d_aps, pose_aps
+    return iou_3d_aps, iou_overlap,  pose_aps
 
 
 

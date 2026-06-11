@@ -1,0 +1,7 @@
+# python test_housecat.py --gpus '0' --test_epoch 40 --method_suffix drent_restored --dataset housecat --config config/housecat_restored_drnet.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/drnet_zs_448x448'
+
+CUDA_VISIBLE_DEVICES=3 python test_housecat.py --test_epoch 20 --method_suffix our_zs_restored --dataset housecat --config config/housecat_restored.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/dreds_clearpose_hiss_50k_dav2_complete_obs_iter_unc_cali_convgru_l1_only_scale_norm_robust_init_wo_soft_fuse_l1+grad_sigma_conf_518x518_seed1/vitl'
+
+CUDA_VISIBLE_DEVICES=3 python test_housecat.py --test_epoch 30 --method_suffix our_zs_restored --dataset housecat --config config/housecat_restored.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/dreds_clearpose_hiss_50k_dav2_complete_obs_iter_unc_cali_convgru_l1_only_scale_norm_robust_init_wo_soft_fuse_l1+grad_sigma_conf_518x518_seed1/vitl'
+
+CUDA_VISIBLE_DEVICES=3 python test_housecat.py --test_epoch 40 --method_suffix our_zs_restored --dataset housecat --config config/housecat_restored.yaml --depth_type 'restored' --restored_depth_root '/mnt/DATA/robotarm/rcao/result/depth/HouseCat6D/dreds_clearpose_hiss_50k_dav2_complete_obs_iter_unc_cali_convgru_l1_only_scale_norm_robust_init_wo_soft_fuse_l1+grad_sigma_conf_518x518_seed1/vitl'
